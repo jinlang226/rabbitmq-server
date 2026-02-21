@@ -143,17 +143,20 @@ defmodule RabbitMQ.CLI.Plugins.Commands.SetCommand do
   end
 
   defp trace_set_plugins(node_name, requested_plugins, mode, before, command_result) do
+    success = command_success?(command_result)
+    reason = reason_for_result(command_result)
     after_state = enabled_plugins_snapshot(node_name)
 
     TraceLogger.emit(
-      "SetPluginsCommand",
+      event_type_for_set_plugins(success),
       before,
       after_state,
-      %{"success" => command_success?(command_result), "raw" => inspect(command_result)},
+      %{"success" => success, "raw" => inspect(command_result)},
       %{
         "node" => to_string(node_name),
         "mode" => to_string(mode),
-        "requestedPlugins" => requested_plugins
+        "requestedPlugins" => requested_plugins,
+        "reason" => reason
       }
     )
 
@@ -182,4 +185,12 @@ defmodule RabbitMQ.CLI.Plugins.Commands.SetCommand do
   defp command_success?(%{errors: _}), do: false
   defp command_success?({:badrpc, _}), do: false
   defp command_success?(_), do: true
+
+  defp event_type_for_set_plugins(true), do: "SetPlugins"
+  defp event_type_for_set_plugins(false), do: "SetPluginsFailed"
+
+  defp reason_for_result({:error, reason}), do: inspect(reason)
+  defp reason_for_result({:badrpc, reason}), do: inspect(reason)
+  defp reason_for_result(%{errors: reason}), do: inspect(reason)
+  defp reason_for_result(_), do: "ok"
 end

@@ -5,6 +5,8 @@ cases=(
   feature-flag-enable
   plugins-set
   queue-rebalance
+  await-online-quorum-plus-one
+  publish-consume
   management-sequence
   plugin-toggle
   rebalance-loop

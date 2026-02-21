@@ -51,25 +51,27 @@ accept_content(Req, {_Mode, #context{user = #user{username = Username}}}=State) 
             rabbit_amqqueue:rebalance(all, <<".*">>, <<".*">>)
         end),
         rabbit_mgmt_trace_logger:emit(
-          <<"QueueRebalanceCommand">>,
+          <<"QueueRebalance">>,
           Before,
           cluster_snapshot(),
           #{<<"success">> => true},
           maps:merge(#{
               <<"source">> => <<"management_api">>,
-              <<"username">> => normalize_username(Username)
+              <<"username">> => normalize_username(Username),
+              <<"reason">> => <<"ok">>
           }, TraceContext)),
         {true, Req, State}
     catch
         {error, Reason} ->
             rabbit_mgmt_trace_logger:emit(
-              <<"QueueRebalanceCommand">>,
+              <<"QueueRebalanceFailed">>,
               Before,
               cluster_snapshot(),
               #{<<"success">> => false, <<"reason">> => to_bin(Reason)},
               maps:merge(#{
                   <<"source">> => <<"management_api">>,
-                  <<"username">> => normalize_username(Username)
+                  <<"username">> => normalize_username(Username),
+                  <<"reason">> => to_bin(Reason)
               }, TraceContext)),
             rabbit_mgmt_util:bad_request(iolist_to_binary(Reason), Req, State)
     end.

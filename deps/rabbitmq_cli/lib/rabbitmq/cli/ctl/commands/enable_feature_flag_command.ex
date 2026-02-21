@@ -149,22 +149,33 @@ defmodule RabbitMQ.CLI.Ctl.Commands.EnableFeatureFlagCommand do
   end
 
   defp trace_enable_result(node_name, feature_flag, has_opted_in, result, before) do
+    success = command_success?(result)
+    reason = reason_for_result(result)
     after_state = feature_flags_snapshot(node_name)
 
     TraceLogger.emit(
-      "EnableFeatureFlagsCommand",
+      event_type_for_enable(success),
       before,
       after_state,
-      %{"success" => command_success?(result), "raw" => inspect(result)},
+      %{"success" => success, "raw" => inspect(result)},
       %{
         "node" => to_string(node_name),
         "featureFlag" => feature_flag,
-        "optIn" => has_opted_in
+        "optIn" => has_opted_in,
+        "reason" => reason
       }
     )
 
     result
   end
+
+  defp event_type_for_enable(true), do: "FeatureFlagsEnabled"
+  defp event_type_for_enable(false), do: "EnableFeatureFlagsFailed"
+
+  defp reason_for_result({:error, _, msg}), do: inspect(msg)
+  defp reason_for_result({:error, msg}), do: inspect(msg)
+  defp reason_for_result({:badrpc, reason}), do: inspect(reason)
+  defp reason_for_result(_), do: "ok"
 
   defp feature_flags_snapshot(node_name) do
     case :rabbit_misc.rpc_call(node_name, :rabbit_feature_flags, :list, [:enabled]) do

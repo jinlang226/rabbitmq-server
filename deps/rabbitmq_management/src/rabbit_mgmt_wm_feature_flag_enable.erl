@@ -69,14 +69,20 @@ feature_flags_snapshot() ->
     end.
 
 emit_trace(ReqData, FeatureFlag, Before, After, Success, Reason) ->
+    EventType =
+        case Success of
+            true -> <<"FeatureFlagsEnabled">>;
+            false -> <<"EnableFeatureFlagsFailed">>
+        end,
     rabbit_mgmt_trace_logger:emit(
-      <<"EnableFeatureFlagsCommand">>,
+      EventType,
       Before,
       After,
       #{<<"success">> => Success, <<"reason">> => to_bin(Reason)},
       maps:merge(#{
           <<"featureFlag">> => FeatureFlag,
-          <<"source">> => <<"management_api">>
+          <<"source">> => <<"management_api">>,
+          <<"reason">> => to_bin(Reason)
       }, trace_context(ReqData))).
 
 trace_context(ReqData) ->

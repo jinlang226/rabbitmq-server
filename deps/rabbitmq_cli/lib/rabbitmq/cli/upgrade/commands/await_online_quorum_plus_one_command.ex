@@ -67,12 +67,17 @@ defmodule RabbitMQ.CLI.Upgrade.Commands.AwaitOnlineQuorumPlusOneCommand do
           other
       end
 
+    success = command_success?(result)
     TraceLogger.emit(
-      "AwaitOnlineQuorumPlusOne",
+      event_type_for_await(success),
       before,
       quorum_snapshot(node_name),
-      %{"success" => command_success?(result), "raw" => inspect(result)},
-      %{"node" => to_string(node_name), "timeoutMs" => timeout}
+      %{"success" => success, "raw" => inspect(result)},
+      %{
+        "node" => to_string(node_name),
+        "timeoutMs" => timeout,
+        "reason" => reason_for_result(result)
+      }
     )
 
     result
@@ -153,4 +158,14 @@ defmodule RabbitMQ.CLI.Upgrade.Commands.AwaitOnlineQuorumPlusOneCommand do
   defp command_success?(:ok), do: true
   defp command_success?({:ok, :single_node_cluster}), do: true
   defp command_success?(_), do: false
+
+  defp event_type_for_await(true), do: "AwaitOnlineQuorumPlusOne"
+  defp event_type_for_await(false), do: "AwaitOnlineQuorumPlusOneFailed"
+
+  defp reason_for_result(:ok), do: "ok"
+  defp reason_for_result({:ok, :single_node_cluster}), do: "single_node_cluster"
+  defp reason_for_result({:error, msg}), do: inspect(msg)
+  defp reason_for_result({:error, _, msg}), do: inspect(msg)
+  defp reason_for_result({:badrpc, reason}), do: inspect(reason)
+  defp reason_for_result(other), do: inspect(other)
 end

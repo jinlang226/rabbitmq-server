@@ -50,6 +50,7 @@ accept_content(ReqData, Context) ->
 do_it(ReqData0, Context) ->
     VHost = rabbit_mgmt_util:vhost(ReqData0),
     X = rabbit_mgmt_util:id(exchange, ReqData0),
+    TraceContext = trace_context(ReqData0),
     rabbit_mgmt_util:with_decode(
       [routing_key, properties, payload, payload_encoding], ReqData0, Context,
       fun ([RoutingKey, Props0, Payload0, Enc], _, ReqData) when is_binary(Payload0) ->
@@ -74,17 +75,17 @@ do_it(ReqData0, Context) ->
                                 receive
                                     #'basic.ack'{} -> ok
                                 end,
-                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), false, true, ok),
+                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), false, true, ok, TraceContext),
                                 good(MRef, false, ReqData, Context);
                             #'basic.ack'{} ->
-                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), true, true, ok),
+                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), true, true, ok, TraceContext),
                                 good(MRef, true, ReqData, Context);
                             #'basic.nack'{} ->
                                 erlang:demonitor(MRef),
-                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), false, false, rejected),
+                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), false, false, rejected, TraceContext),
                                 bad(rejected, ReqData, Context);
                             {'DOWN', _, _, _, Err} ->
-                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), false, false, Err),
+                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), false, false, Err, TraceContext),
                                 bad(Err, ReqData, Context)
                         end
                 end);
@@ -118,9 +119,14 @@ decode(Payload, <<"string">>) -> Payload;
 decode(Payload, <<"base64">>) -> rabbit_mgmt_util:b64decode_or_throw(Payload);
 decode(_Payload, Enc)         -> throw({error, {unsupported_encoding, Enc}}).
 
-trace_publish(Before, VHost, Exchange, RoutingKey, Enc, PayloadBytes, Routed, Success, Reason) ->
+trace_publish(Before, VHost, Exchange, RoutingKey, Enc, PayloadBytes, Routed, Success, Reason, TraceContext) ->
+    EventType =
+        case Success of
+            true -> <<"PublishMessage">>;
+            false -> <<"PublishMessageFailed">>
+        end,
     rabbit_mgmt_trace_logger:emit(
-      <<"PublishMessage">>,
+      EventType,
       Before,
       publish_snapshot(VHost, Exchange, RoutingKey),
       #{
@@ -128,13 +134,14 @@ trace_publish(Before, VHost, Exchange, RoutingKey, Enc, PayloadBytes, Routed, Su
           <<"routed">> => Routed,
           <<"reason">> => to_bin(Reason)
       },
-      #{
+      maps:merge(#{
           <<"source">> => <<"management_api">>,
           <<"exchange">> => Exchange,
           <<"routingKey">> => RoutingKey,
           <<"payloadEncoding">> => Enc,
-          <<"payloadBytes">> => PayloadBytes
-      }).
+          <<"payloadBytes">> => PayloadBytes,
+          <<"reason">> => to_bin(Reason)
+      }, TraceContext)).
 
 publish_snapshot(VHost, <<>>, RoutingKey) ->
     queue_snapshot(VHost, RoutingKey);
@@ -171,3 +178,26 @@ to_bin(V) when is_binary(V) -> V;
 to_bin(V) when is_atom(V) -> atom_to_binary(V, utf8);
 to_bin(V) when is_list(V) -> list_to_binary(V);
 to_bin(V) -> list_to_binary(io_lib:format("~tp", [V])).
+
+trace_context(Req) ->
+    add_if_defined(
+      <<"traceEnabled">>,
+      parse_bool(cowboy_req:header(<<"x-rabbitmq-trace-enabled">>, Req)),
+      add_if_defined(
+        <<"testCase">>,
+        cowboy_req:header(<<"x-rabbitmq-trace-testcase">>, Req),
+        #{})).
+
+add_if_defined(_K, undefined, M) -> M;
+add_if_defined(K, V, M) -> M#{K => V}.
+
+parse_bool(undefined) -> undefined;
+parse_bool(<<"1">>) -> true;
+parse_bool(<<"true">>) -> true;
+parse_bool(<<"yes">>) -> true;
+parse_bool(<<"on">>) -> true;
+parse_bool(<<"0">>) -> false;
+parse_bool(<<"false">>) -> false;
+parse_bool(<<"no">>) -> false;
+parse_bool(<<"off">>) -> false;
+parse_bool(Other) -> to_bin(Other).

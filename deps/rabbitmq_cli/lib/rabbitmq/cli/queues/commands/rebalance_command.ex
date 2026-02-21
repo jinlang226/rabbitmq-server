@@ -53,18 +53,20 @@ defmodule RabbitMQ.CLI.Queues.Commands.RebalanceCommand do
     before = rebalance_snapshot(node_name)
     arg = String.to_atom(type)
     result = :rabbit_misc.rpc_call(node_name, :rabbit_amqqueue, :rebalance, [arg, vhost_pat, queue_pat])
+    success = command_success?(result)
     after_state = rebalance_snapshot(node_name)
 
     TraceLogger.emit(
-      "QueueRebalanceCommand",
+      event_type_for_rebalance(success),
       before,
       after_state,
-      %{"success" => command_success?(result), "raw" => inspect(result)},
+      %{"success" => success, "raw" => inspect(result)},
       %{
         "node" => to_string(node_name),
         "queueType" => type,
         "vhostPattern" => vhost_pat,
-        "queuePattern" => queue_pat
+        "queuePattern" => queue_pat,
+        "reason" => reason_for_result(result)
       }
     )
 
@@ -133,4 +135,11 @@ defmodule RabbitMQ.CLI.Queues.Commands.RebalanceCommand do
   defp command_success?({:badrpc, _}), do: false
   defp command_success?({:error, _}), do: false
   defp command_success?(_), do: true
+
+  defp event_type_for_rebalance(true), do: "QueueRebalance"
+  defp event_type_for_rebalance(false), do: "QueueRebalanceFailed"
+
+  defp reason_for_result({:badrpc, reason}), do: inspect(reason)
+  defp reason_for_result({:error, reason}), do: inspect(reason)
+  defp reason_for_result(_), do: "ok"
 end

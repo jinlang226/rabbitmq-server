@@ -50,6 +50,7 @@ accept_content(ReqData, Context) ->
 do_it(ReqData0, Context) ->
     VHost = rabbit_mgmt_util:vhost(ReqData0),
     Q = rabbit_mgmt_util:id(queue, ReqData0),
+    TraceContext = trace_context(ReqData0),
     rabbit_mgmt_util:with_decode(
       [ackmode, count, encoding], ReqData0, Context,
       fun([AckModeBin, CountBin, EncBin], Body, ReqData) ->
@@ -82,13 +83,14 @@ do_it(ReqData0, Context) ->
                               <<"hasMessage">> => (length(Reply) > 0),
                               <<"consumedCount">> => length(Reply)
                           },
-                          #{
+                          maps:merge(#{
                               <<"source">> => <<"management_api">>,
                               <<"queue">> => Q,
                               <<"ackMode">> => AckModeBin,
                               <<"requestedCount">> => Count,
-                              <<"encoding">> => EncBin
-                          }),
+                              <<"encoding">> => EncBin,
+                              <<"reason">> => <<"ok">>
+                          }, TraceContext)),
                         rabbit_mgmt_util:reply(remove_delivery_tag(Reply),
 					       ReqData, Context)
                 end)
@@ -229,3 +231,26 @@ to_bin(V) when is_binary(V) -> V;
 to_bin(V) when is_atom(V) -> atom_to_binary(V, utf8);
 to_bin(V) when is_list(V) -> list_to_binary(V);
 to_bin(V) -> list_to_binary(io_lib:format("~tp", [V])).
+
+trace_context(Req) ->
+    add_if_defined(
+      <<"traceEnabled">>,
+      parse_bool(cowboy_req:header(<<"x-rabbitmq-trace-enabled">>, Req)),
+      add_if_defined(
+        <<"testCase">>,
+        cowboy_req:header(<<"x-rabbitmq-trace-testcase">>, Req),
+        #{})).
+
+add_if_defined(_K, undefined, M) -> M;
+add_if_defined(K, V, M) -> M#{K => V}.
+
+parse_bool(undefined) -> undefined;
+parse_bool(<<"1">>) -> true;
+parse_bool(<<"true">>) -> true;
+parse_bool(<<"yes">>) -> true;
+parse_bool(<<"on">>) -> true;
+parse_bool(<<"0">>) -> false;
+parse_bool(<<"false">>) -> false;
+parse_bool(<<"no">>) -> false;
+parse_bool(<<"off">>) -> false;
+parse_bool(Other) -> to_bin(Other).
