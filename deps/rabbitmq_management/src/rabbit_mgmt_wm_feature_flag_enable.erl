@@ -34,12 +34,15 @@ is_authorized(ReqData, Context) ->
 
 accept_content(ReqData, #context{} = Context) ->
     NameS = rabbit_mgmt_util:id(name, ReqData),
+    Before = feature_flags_snapshot(),
     try
         Name = list_to_existing_atom(binary_to_list(NameS)),
         case rabbit_feature_flags:enable(Name) of
             ok ->
+                emit_trace(ReqData, NameS, Before, feature_flags_snapshot(), true, ok),
                 {true, ReqData, Context};
             {error, Reason1} ->
+                emit_trace(ReqData, NameS, Before, feature_flags_snapshot(), false, Reason1),
                 FormattedReason1 = rabbit_ff_extra:format_error(Reason1),
                 rabbit_mgmt_util:bad_request(
                   list_to_binary(FormattedReason1), ReqData, Context)
@@ -47,7 +50,58 @@ accept_content(ReqData, #context{} = Context) ->
     catch
         _:badarg ->
             Reason2 = unsupported,
+            emit_trace(ReqData, NameS, Before, feature_flags_snapshot(), false, Reason2),
             FormattedReason2 = rabbit_ff_extra:format_error(Reason2),
             rabbit_mgmt_util:bad_request(
               list_to_binary(FormattedReason2), ReqData, Context)
     end.
+
+feature_flags_snapshot() ->
+    case rabbit_feature_flags:list(enabled) of
+        Map when is_map(Map) ->
+            Names = lists:sort([atom_to_binary(Name, utf8) || Name <- maps:keys(Map)]),
+            #{
+                <<"enabledFeatureFlagCount">> => length(Names),
+                <<"enabledFeatureFlags">> => Names
+            };
+        Other ->
+            #{<<"raw">> => list_to_binary(io_lib:format("~tp", [Other]))}
+    end.
+
+emit_trace(ReqData, FeatureFlag, Before, After, Success, Reason) ->
+    rabbit_mgmt_trace_logger:emit(
+      <<"EnableFeatureFlagsCommand">>,
+      Before,
+      After,
+      #{<<"success">> => Success, <<"reason">> => to_bin(Reason)},
+      maps:merge(#{
+          <<"featureFlag">> => FeatureFlag,
+          <<"source">> => <<"management_api">>
+      }, trace_context(ReqData))).
+
+trace_context(ReqData) ->
+    add_if_defined(
+      <<"traceEnabled">>,
+      parse_bool(cowboy_req:header(<<"x-rabbitmq-trace-enabled">>, ReqData)),
+      add_if_defined(
+        <<"testCase">>,
+        cowboy_req:header(<<"x-rabbitmq-trace-testcase">>, ReqData),
+        #{})).
+
+add_if_defined(_K, undefined, M) -> M;
+add_if_defined(K, V, M) -> M#{K => V}.
+
+parse_bool(undefined) -> undefined;
+parse_bool(<<"1">>) -> true;
+parse_bool(<<"true">>) -> true;
+parse_bool(<<"yes">>) -> true;
+parse_bool(<<"on">>) -> true;
+parse_bool(<<"0">>) -> false;
+parse_bool(<<"false">>) -> false;
+parse_bool(<<"no">>) -> false;
+parse_bool(<<"off">>) -> false;
+parse_bool(Other) -> to_bin(Other).
+
+to_bin(V) when is_binary(V) -> V;
+to_bin(V) when is_atom(V) -> atom_to_binary(V, utf8);
+to_bin(V) -> list_to_binary(io_lib:format("~tp", [V])).

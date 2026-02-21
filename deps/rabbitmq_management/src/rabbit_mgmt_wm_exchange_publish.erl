@@ -56,6 +56,7 @@ do_it(ReqData0, Context) ->
               rabbit_mgmt_util:with_channel(
                 VHost, ReqData, Context,
                 fun (Ch) ->
+                        Before = publish_snapshot(VHost, X, RoutingKey),
                         MRef = erlang:monitor(process, Ch),
                         amqp_channel:register_confirm_handler(Ch, self()),
                         amqp_channel:register_return_handler(Ch, self()),
@@ -73,13 +74,17 @@ do_it(ReqData0, Context) ->
                                 receive
                                     #'basic.ack'{} -> ok
                                 end,
+                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), false, true, ok),
                                 good(MRef, false, ReqData, Context);
                             #'basic.ack'{} ->
+                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), true, true, ok),
                                 good(MRef, true, ReqData, Context);
                             #'basic.nack'{} ->
                                 erlang:demonitor(MRef),
+                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), false, false, rejected),
                                 bad(rejected, ReqData, Context);
                             {'DOWN', _, _, _, Err} ->
+                                trace_publish(Before, VHost, X, RoutingKey, Enc, size(Payload0), false, false, Err),
                                 bad(Err, ReqData, Context)
                         end
                 end);
@@ -112,3 +117,57 @@ is_authorized(ReqData, Context) ->
 decode(Payload, <<"string">>) -> Payload;
 decode(Payload, <<"base64">>) -> rabbit_mgmt_util:b64decode_or_throw(Payload);
 decode(_Payload, Enc)         -> throw({error, {unsupported_encoding, Enc}}).
+
+trace_publish(Before, VHost, Exchange, RoutingKey, Enc, PayloadBytes, Routed, Success, Reason) ->
+    rabbit_mgmt_trace_logger:emit(
+      <<"PublishMessage">>,
+      Before,
+      publish_snapshot(VHost, Exchange, RoutingKey),
+      #{
+          <<"success">> => Success,
+          <<"routed">> => Routed,
+          <<"reason">> => to_bin(Reason)
+      },
+      #{
+          <<"source">> => <<"management_api">>,
+          <<"exchange">> => Exchange,
+          <<"routingKey">> => RoutingKey,
+          <<"payloadEncoding">> => Enc,
+          <<"payloadBytes">> => PayloadBytes
+      }).
+
+publish_snapshot(VHost, <<>>, RoutingKey) ->
+    queue_snapshot(VHost, RoutingKey);
+publish_snapshot(_VHost, Exchange, RoutingKey) ->
+    #{
+        <<"exchange">> => Exchange,
+        <<"routingKey">> => RoutingKey
+    }.
+
+queue_snapshot(VHost, QueueName) ->
+    Name = rabbit_misc:r(VHost, queue, QueueName),
+    case rabbit_amqqueue:lookup(Name) of
+        {ok, Q} ->
+            Info = rabbit_amqqueue:info(Q, [messages, messages_ready, messages_unacknowledged, consumers]),
+            #{<<"queueFound">> => true, <<"queue">> => QueueName, <<"queueInfo">> => info_map(Info)};
+        {error, not_found} ->
+            #{<<"queueFound">> => false, <<"queue">> => QueueName}
+    end.
+
+info_map(Info) ->
+    maps:from_list([{to_bin(K), normalize(Val)} || {K, Val} <- Info]).
+
+normalize(V) when is_integer(V); is_float(V); is_boolean(V) -> V;
+normalize(V) when is_binary(V) -> V;
+normalize(V) when is_atom(V) -> atom_to_binary(V, utf8);
+normalize(V) when is_list(V) ->
+    case io_lib:printable_unicode_list(V) of
+        true -> list_to_binary(V);
+        false -> [normalize(E) || E <- V]
+    end;
+normalize(V) -> to_bin(V).
+
+to_bin(V) when is_binary(V) -> V;
+to_bin(V) when is_atom(V) -> atom_to_binary(V, utf8);
+to_bin(V) when is_list(V) -> list_to_binary(V);
+to_bin(V) -> list_to_binary(io_lib:format("~tp", [V])).

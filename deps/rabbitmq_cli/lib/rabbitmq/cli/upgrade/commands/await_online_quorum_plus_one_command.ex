@@ -6,6 +6,7 @@
 
 defmodule RabbitMQ.CLI.Upgrade.Commands.AwaitOnlineQuorumPlusOneCommand do
   alias RabbitMQ.CLI.Core.DocGuide
+  alias RabbitMQ.CLI.Core.TraceLogger
   import RabbitMQ.CLI.Core.Config, only: [output_less?: 1]
 
   @behaviour RabbitMQ.CLI.CommandBehaviour
@@ -27,42 +28,54 @@ defmodule RabbitMQ.CLI.Upgrade.Commands.AwaitOnlineQuorumPlusOneCommand do
   end
 
   def run([], %{node: node_name, timeout: timeout}) do
+    before = quorum_snapshot(node_name)
     rpc_timeout = timeout + 500
 
-    case :rabbit_misc.rpc_call(node_name, :rabbit_nodes, :is_single_node_cluster, [], rpc_timeout) do
-      # if target node is the only one in the cluster, the command makes little sense
-      # and false positives can be misleading
-      true ->
-        {:ok, :single_node_cluster}
+    result =
+      case :rabbit_misc.rpc_call(node_name, :rabbit_nodes, :is_single_node_cluster, [], rpc_timeout) do
+        # if target node is the only one in the cluster, the command makes little sense
+        # and false positives can be misleading
+        true ->
+          {:ok, :single_node_cluster}
 
-      false ->
-        case :rabbit_misc.rpc_call(
-               node_name,
-               :rabbit_upgrade_preparation,
-               :await_online_quorum_plus_one,
-               [timeout],
-               rpc_timeout
-             ) do
-          {:error, _} = err ->
-            err
+        false ->
+          case :rabbit_misc.rpc_call(
+                 node_name,
+                 :rabbit_upgrade_preparation,
+                 :await_online_quorum_plus_one,
+                 [timeout],
+                 rpc_timeout
+               ) do
+            {:error, _} = err ->
+              err
 
-          {:error, _, _} = err ->
-            err
+            {:error, _, _} = err ->
+              err
 
-          {:badrpc, _} = err ->
-            err
+            {:badrpc, _} = err ->
+              err
 
-          true ->
-            :ok
+            true ->
+              :ok
 
-          false ->
-            {:error,
-             "time is up, no quorum + 1 online replicas came online for at least some quorum queues or streams"}
-        end
+            false ->
+              {:error,
+               "time is up, no quorum + 1 online replicas came online for at least some quorum queues or streams"}
+          end
 
-      other ->
-        other
-    end
+        other ->
+          other
+      end
+
+    TraceLogger.emit(
+      "AwaitOnlineQuorumPlusOne",
+      before,
+      quorum_snapshot(node_name),
+      %{"success" => command_success?(result), "raw" => inspect(result)},
+      %{"node" => to_string(node_name), "timeoutMs" => timeout}
+    )
+
+    result
   end
 
   def output({:ok, :single_node_cluster}, %{formatter: "json"}) do
@@ -110,4 +123,34 @@ defmodule RabbitMQ.CLI.Upgrade.Commands.AwaitOnlineQuorumPlusOneCommand do
   def banner([], %{timeout: timeout}) do
     "Will wait for a quorum + 1 of nodes to be online for all quorum queues and streams for #{round(timeout / 1000)} seconds..."
   end
+
+  defp quorum_snapshot(node_name) do
+    single_node =
+      case :rabbit_misc.rpc_call(node_name, :rabbit_nodes, :is_single_node_cluster, []) do
+        true -> true
+        false -> false
+        _ -> nil
+      end
+
+    running_nodes =
+      case :rabbit_misc.rpc_call(node_name, :rabbit_nodes, :list_running, []) do
+        nodes when is_list(nodes) ->
+          nodes
+          |> Enum.map(&to_string/1)
+          |> Enum.sort()
+
+        _ ->
+          []
+      end
+
+    %{
+      "singleNodeCluster" => single_node,
+      "runningNodeCount" => length(running_nodes),
+      "runningNodes" => running_nodes
+    }
+  end
+
+  defp command_success?(:ok), do: true
+  defp command_success?({:ok, :single_node_cluster}), do: true
+  defp command_success?(_), do: false
 end

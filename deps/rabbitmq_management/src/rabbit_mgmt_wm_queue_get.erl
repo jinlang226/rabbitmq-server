@@ -56,6 +56,7 @@ do_it(ReqData0, Context) ->
               rabbit_mgmt_util:with_channel(
                 VHost, ReqData, Context,
                 fun (Ch) ->
+                        Before = queue_snapshot(VHost, Q),
                         AckMode = list_to_atom(binary_to_list(AckModeBin)),
                         Count = rabbit_mgmt_util:parse_int(CountBin),
                         Enc = case EncBin of
@@ -71,6 +72,23 @@ do_it(ReqData0, Context) ->
 
                         Reply = basic_gets(Count, Ch, Q, AckMode, Enc, Trunc),
                         maybe_return(Reply, Ch, AckMode),
+                        After = queue_snapshot(VHost, Q),
+                        rabbit_mgmt_trace_logger:emit(
+                          <<"ConsumeMessage">>,
+                          Before,
+                          After,
+                          #{
+                              <<"success">> => true,
+                              <<"hasMessage">> => (length(Reply) > 0),
+                              <<"consumedCount">> => length(Reply)
+                          },
+                          #{
+                              <<"source">> => <<"management_api">>,
+                              <<"queue">> => Q,
+                              <<"ackMode">> => AckModeBin,
+                              <<"requestedCount">> => Count,
+                              <<"encoding">> => EncBin
+                          }),
                         rabbit_mgmt_util:reply(remove_delivery_tag(Reply),
 					       ReqData, Context)
                 end)
@@ -176,3 +194,38 @@ payload_part(Payload, Enc) ->
 is_utf8(<<>>) -> true;
 is_utf8(<<_/utf8, Rest/bits>>) -> is_utf8(Rest);
 is_utf8(_) -> false.
+
+queue_snapshot(VHost, QueueName) ->
+    Name = rabbit_misc:r(VHost, queue, QueueName),
+    case rabbit_amqqueue:lookup(Name) of
+        {ok, Q} ->
+            Info = rabbit_amqqueue:info(Q, [messages, messages_ready, messages_unacknowledged, consumers]),
+            #{
+                <<"queueFound">> => true,
+                <<"queue">> => QueueName,
+                <<"queueInfo">> => info_map(Info)
+            };
+        {error, not_found} ->
+            #{
+                <<"queueFound">> => false,
+                <<"queue">> => QueueName
+            }
+    end.
+
+info_map(Info) ->
+    maps:from_list([{to_bin(K), normalize(Val)} || {K, Val} <- Info]).
+
+normalize(V) when is_integer(V); is_float(V); is_boolean(V) -> V;
+normalize(V) when is_binary(V) -> V;
+normalize(V) when is_atom(V) -> atom_to_binary(V, utf8);
+normalize(V) when is_list(V) ->
+    case io_lib:printable_unicode_list(V) of
+        true -> list_to_binary(V);
+        false -> [normalize(E) || E <- V]
+    end;
+normalize(V) -> to_bin(V).
+
+to_bin(V) when is_binary(V) -> V;
+to_bin(V) when is_atom(V) -> atom_to_binary(V, utf8);
+to_bin(V) when is_list(V) -> list_to_binary(V);
+to_bin(V) -> list_to_binary(io_lib:format("~tp", [V])).

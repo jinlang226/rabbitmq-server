@@ -7,6 +7,8 @@
 defmodule RabbitMQ.CLI.Ctl.Commands.EnableFeatureFlagCommand do
   @behaviour RabbitMQ.CLI.CommandBehaviour
 
+  alias RabbitMQ.CLI.Core.TraceLogger
+
   def switches(), do: [experimental: :boolean, opt_in: :boolean]
   def aliases(), do: [e: :experimental, o: :opt_in]
 
@@ -97,42 +99,97 @@ defmodule RabbitMQ.CLI.Ctl.Commands.EnableFeatureFlagCommand do
   #
 
   defp enable_all(node_name, has_opted_in) do
-    case has_opted_in do
-      true ->
-        msg =
-          "`--opt-in` (aliased as `--experimental`) flag is not allowed when enabling all feature flags.\nUse --opt-in with a specific feature flag name if to enable an opt-in flag"
+    before = feature_flags_snapshot(node_name)
 
-        {:error, RabbitMQ.CLI.Core.ExitCodes.exit_usage(), msg}
+    result =
+      case has_opted_in do
+        true ->
+          msg =
+            "`--opt-in` (aliased as `--experimental`) flag is not allowed when enabling all feature flags.\nUse --opt-in with a specific feature flag name if to enable an opt-in flag"
 
-      _ ->
-        case :rabbit_misc.rpc_call(node_name, :rabbit_feature_flags, :enable_all, []) do
-          {:badrpc, _} = err -> err
-          other -> other
-        end
-    end
+          {:error, RabbitMQ.CLI.Core.ExitCodes.exit_usage(), msg}
+
+        _ ->
+          case :rabbit_misc.rpc_call(node_name, :rabbit_feature_flags, :enable_all, []) do
+            {:badrpc, _} = err -> err
+            other -> other
+          end
+      end
+
+    trace_enable_result(node_name, "all", has_opted_in, result, before)
   end
 
   defp enable_one(node_name, feature_flag, has_opted_in) do
-    case {has_opted_in,
-          :rabbit_misc.rpc_call(node_name, :rabbit_feature_flags, :get_stability, [
-            String.to_atom(feature_flag)
-          ])} do
-      {_, {:badrpc, _} = err} ->
-        err
+    before = feature_flags_snapshot(node_name)
 
-      {false, :experimental} ->
-        msg =
-          "Feature flag #{feature_flag} requires the user to explicitly opt-in.\nUse --opt-in with a specific feature flag name if to enable an opt-in flag"
+    result =
+      case {has_opted_in,
+            :rabbit_misc.rpc_call(node_name, :rabbit_feature_flags, :get_stability, [
+              String.to_atom(feature_flag)
+            ])} do
+        {_, {:badrpc, _} = err} ->
+          err
 
-        {:error, RabbitMQ.CLI.Core.ExitCodes.exit_usage(), msg}
+        {false, :experimental} ->
+          msg =
+            "Feature flag #{feature_flag} requires the user to explicitly opt-in.\nUse --opt-in with a specific feature flag name if to enable an opt-in flag"
 
-      _ ->
-        case :rabbit_misc.rpc_call(node_name, :rabbit_feature_flags, :enable, [
-               String.to_atom(feature_flag)
-             ]) do
-          {:badrpc, _} = err -> err
-          other -> other
-        end
+          {:error, RabbitMQ.CLI.Core.ExitCodes.exit_usage(), msg}
+
+        _ ->
+          case :rabbit_misc.rpc_call(node_name, :rabbit_feature_flags, :enable, [
+                 String.to_atom(feature_flag)
+               ]) do
+            {:badrpc, _} = err -> err
+            other -> other
+          end
+      end
+
+    trace_enable_result(node_name, feature_flag, has_opted_in, result, before)
+  end
+
+  defp trace_enable_result(node_name, feature_flag, has_opted_in, result, before) do
+    after = feature_flags_snapshot(node_name)
+
+    TraceLogger.emit(
+      "EnableFeatureFlagsCommand",
+      before,
+      after,
+      %{"success" => command_success?(result), "raw" => inspect(result)},
+      %{
+        "node" => to_string(node_name),
+        "featureFlag" => feature_flag,
+        "optIn" => has_opted_in
+      }
+    )
+
+    result
+  end
+
+  defp feature_flags_snapshot(node_name) do
+    case :rabbit_misc.rpc_call(node_name, :rabbit_feature_flags, :list, [:enabled]) do
+      {:badrpc, _} = err ->
+        %{"rpcError" => inspect(err)}
+
+      %{} = flags ->
+        enabled_flags =
+          flags
+          |> Map.keys()
+          |> Enum.map(&to_string/1)
+          |> Enum.sort()
+
+        %{
+          "enabledFeatureFlags" => enabled_flags,
+          "enabledFeatureFlagCount" => length(enabled_flags)
+        }
+
+      other ->
+        %{"raw" => inspect(other)}
     end
   end
+
+  defp command_success?({:error, _, _}), do: false
+  defp command_success?({:error, _}), do: false
+  defp command_success?({:badrpc, _}), do: false
+  defp command_success?(_), do: true
 end

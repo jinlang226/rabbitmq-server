@@ -6,6 +6,7 @@
 
 defmodule RabbitMQ.CLI.Queues.Commands.RebalanceCommand do
   alias RabbitMQ.CLI.Core.DocGuide
+  alias RabbitMQ.CLI.Core.TraceLogger
 
   @behaviour RabbitMQ.CLI.CommandBehaviour
   use RabbitMQ.CLI.DefaultOutput
@@ -49,8 +50,25 @@ defmodule RabbitMQ.CLI.Queues.Commands.RebalanceCommand do
   end
 
   def run([type], %{node: node_name, vhost_pattern: vhost_pat, queue_pattern: queue_pat}) do
+    before = rebalance_snapshot(node_name)
     arg = String.to_atom(type)
-    :rabbit_misc.rpc_call(node_name, :rabbit_amqqueue, :rebalance, [arg, vhost_pat, queue_pat])
+    result = :rabbit_misc.rpc_call(node_name, :rabbit_amqqueue, :rebalance, [arg, vhost_pat, queue_pat])
+    after = rebalance_snapshot(node_name)
+
+    TraceLogger.emit(
+      "QueueRebalanceCommand",
+      before,
+      after,
+      %{"success" => command_success?(result), "raw" => inspect(result)},
+      %{
+        "node" => to_string(node_name),
+        "queueType" => type,
+        "vhostPattern" => vhost_pat,
+        "queuePattern" => queue_pat
+      }
+    )
+
+    result
   end
 
   def formatter(), do: RabbitMQ.CLI.Formatters.PrettyTable
@@ -93,4 +111,26 @@ defmodule RabbitMQ.CLI.Queues.Commands.RebalanceCommand do
   def banner([type], _) do
     "Re-balancing leaders of #{type} queues..."
   end
+
+  defp rebalance_snapshot(node_name) do
+    case :rabbit_misc.rpc_call(node_name, :rabbit_nodes, :list_running, []) do
+      {:badrpc, _} = err ->
+        %{"rpcError" => inspect(err)}
+
+      nodes when is_list(nodes) ->
+        running_nodes = nodes |> Enum.map(&to_string/1) |> Enum.sort()
+
+        %{
+          "runningNodes" => running_nodes,
+          "runningNodeCount" => length(running_nodes)
+        }
+
+      other ->
+        %{"raw" => inspect(other)}
+    end
+  end
+
+  defp command_success?({:badrpc, _}), do: false
+  defp command_success?({:error, _}), do: false
+  defp command_success?(_), do: true
 end

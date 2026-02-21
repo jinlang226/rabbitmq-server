@@ -6,7 +6,7 @@
 
 defmodule RabbitMQ.CLI.Plugins.Commands.SetCommand do
   alias RabbitMQ.CLI.Plugins.Helpers, as: PluginHelpers
-  alias RabbitMQ.CLI.Core.{DocGuide, ExitCodes, Validators}
+  alias RabbitMQ.CLI.Core.{DocGuide, ExitCodes, Validators, TraceLogger}
   import RabbitMQ.CLI.Core.{CodePath, Paths}
 
   @behaviour RabbitMQ.CLI.CommandBehaviour
@@ -95,6 +95,8 @@ defmodule RabbitMQ.CLI.Plugins.Commands.SetCommand do
   def do_run(plugins, %{node: node_name} = opts) do
     all = PluginHelpers.list(opts)
     mode = PluginHelpers.mode(opts)
+    requested_plugins = plugins |> Enum.map(&to_string/1) |> Enum.sort()
+    before = enabled_plugins_snapshot(node_name)
 
     case PluginHelpers.set_enabled_plugins(plugins, opts) do
       {:ok, enabled_plugins} ->
@@ -102,23 +104,26 @@ defmodule RabbitMQ.CLI.Plugins.Commands.SetCommand do
          Stream.concat([
            [:rabbit_plugins.strictly_plugins(enabled_plugins, all)],
            RabbitMQ.CLI.Core.Helpers.defer(fn ->
-             case PluginHelpers.update_enabled_plugins(
-                    enabled_plugins,
-                    mode,
-                    node_name,
-                    opts
-                  ) do
-               %{set: _} = map ->
-                 filter_strictly_plugins(map, all, [:set, :started, :stopped])
+             command_result =
+               case PluginHelpers.update_enabled_plugins(
+                      enabled_plugins,
+                      mode,
+                      node_name,
+                      opts
+                    ) do
+                 %{set: _} = map ->
+                   filter_strictly_plugins(map, all, [:set, :started, :stopped])
 
-               {:error, _} = err ->
-                 err
-             end
+                 {:error, _} = err ->
+                   err
+               end
+
+             trace_set_plugins(node_name, requested_plugins, mode, before, command_result)
            end)
          ])}
 
       {:error, _} = err ->
-        err
+        trace_set_plugins(node_name, requested_plugins, mode, before, err)
     end
   end
 
@@ -136,4 +141,45 @@ defmodule RabbitMQ.CLI.Plugins.Commands.SetCommand do
         filter_strictly_plugins(Map.put(map, head, value), all, tail)
     end
   end
+
+  defp trace_set_plugins(node_name, requested_plugins, mode, before, command_result) do
+    after = enabled_plugins_snapshot(node_name)
+
+    TraceLogger.emit(
+      "SetPluginsCommand",
+      before,
+      after,
+      %{"success" => command_success?(command_result), "raw" => inspect(command_result)},
+      %{
+        "node" => to_string(node_name),
+        "mode" => to_string(mode),
+        "requestedPlugins" => requested_plugins
+      }
+    )
+
+    command_result
+  end
+
+  defp enabled_plugins_snapshot(node_name) do
+    case :rabbit_misc.rpc_call(node_name, :rabbit_plugins, :enabled_plugins, []) do
+      {:badrpc, _} = err ->
+        %{"rpcError" => inspect(err)}
+
+      plugins when is_list(plugins) ->
+        plugin_names = plugins |> Enum.map(&to_string/1) |> Enum.sort()
+
+        %{
+          "enabledPlugins" => plugin_names,
+          "enabledPluginCount" => length(plugin_names)
+        }
+
+      other ->
+        %{"raw" => inspect(other)}
+    end
+  end
+
+  defp command_success?({:error, _}), do: false
+  defp command_success?(%{errors: _}), do: false
+  defp command_success?({:badrpc, _}), do: false
+  defp command_success?(_), do: true
 end
