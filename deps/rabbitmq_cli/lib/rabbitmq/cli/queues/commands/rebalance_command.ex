@@ -53,12 +53,12 @@ defmodule RabbitMQ.CLI.Queues.Commands.RebalanceCommand do
     before = rebalance_snapshot(node_name)
     arg = String.to_atom(type)
     result = :rabbit_misc.rpc_call(node_name, :rabbit_amqqueue, :rebalance, [arg, vhost_pat, queue_pat])
-    after = rebalance_snapshot(node_name)
+    after_state = rebalance_snapshot(node_name)
 
     TraceLogger.emit(
       "QueueRebalanceCommand",
       before,
-      after,
+      after_state,
       %{"success" => command_success?(result), "raw" => inspect(result)},
       %{
         "node" => to_string(node_name),

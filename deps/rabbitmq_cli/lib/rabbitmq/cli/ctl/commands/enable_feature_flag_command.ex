@@ -149,12 +149,12 @@ defmodule RabbitMQ.CLI.Ctl.Commands.EnableFeatureFlagCommand do
   end
 
   defp trace_enable_result(node_name, feature_flag, has_opted_in, result, before) do
-    after = feature_flags_snapshot(node_name)
+    after_state = feature_flags_snapshot(node_name)
 
     TraceLogger.emit(
       "EnableFeatureFlagsCommand",
       before,
-      after,
+      after_state,
       %{"success" => command_success?(result), "raw" => inspect(result)},
       %{
         "node" => to_string(node_name),

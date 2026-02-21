@@ -11,9 +11,9 @@ defmodule RabbitMQ.CLI.Core.TraceLogger do
   @trace_dir_env "RABBITMQ_APP_TRACE_DIR"
   @test_case_env "RABBITMQ_APP_TRACE_TESTCASE"
 
-  def emit(event_type, before, after, result, details \\ %{}) do
+  def emit(event_type, before_state, after_state, result, details \\ %{}) do
     if enabled?() do
-      write_event(event_type, before, after, result, details)
+      write_event(event_type, before_state, after_state, result, details)
     end
 
     :ok
@@ -32,7 +32,7 @@ defmodule RabbitMQ.CLI.Core.TraceLogger do
     end
   end
 
-  defp write_event(event_type, before, after, result, details) do
+  defp write_event(event_type, before_state, after_state, result, details) do
     test_case = trace_test_case()
     path = trace_file_path(test_case)
     doc = load_doc(path, test_case)
@@ -43,8 +43,8 @@ defmodule RabbitMQ.CLI.Core.TraceLogger do
         "stepSeq" => length(events) + 1,
         "timestamp" => DateTime.utc_now() |> DateTime.to_iso8601(),
         "eventType" => to_string(event_type),
-        "before" => normalize(before),
-        "after" => normalize(after),
+        "before" => normalize(before_state),
+        "after" => normalize(after_state),
         "result" => normalize(result),
         "details" => normalize(details)
       }

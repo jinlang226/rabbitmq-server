@@ -143,12 +143,12 @@ defmodule RabbitMQ.CLI.Plugins.Commands.SetCommand do
   end
 
   defp trace_set_plugins(node_name, requested_plugins, mode, before, command_result) do
-    after = enabled_plugins_snapshot(node_name)
+    after_state = enabled_plugins_snapshot(node_name)
 
     TraceLogger.emit(
       "SetPluginsCommand",
       before,
-      after,
+      after_state,
       %{"success" => command_success?(command_result), "raw" => inspect(command_result)},
       %{
         "node" => to_string(node_name),
