@@ -1869,6 +1869,8 @@ define dep_autopatch_mix.erl
 	MixFile = <<"$(call core_native_path,$(DEPS_DIR)/$1/mix.exs)">>,
 	{Mod, Bin} =
 		case elixir_compiler:file(MixFile, fun(_File, _LexerPid) -> ok end) of
+			[{T = {_, _, _}, _CheckerPid}] -> {element(1, T), element(3, T)};
+			[T = {_, _, _}] -> {element(1, T), element(3, T)};
 			[{T = {_, _}, _CheckerPid}] -> T;
 			[T = {_, _}] -> T
 		end,
